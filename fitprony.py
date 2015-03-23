@@ -19,6 +19,11 @@ def displ2force(params, displ):
     return force
 
 
+def force2displ(params, force):
+    displ = np.log(force / params[0] + 1) / params[1]
+    return displ
+
+
 def relax(params, time):
     g1, tau1, g2, tau2, g3, tau3 = params
     ginf = 1 - g1 - g2 - g3
@@ -29,15 +34,13 @@ def relax(params, time):
     return gr
 
 
-def creep(params, time, ginf):
+def creep(params, time, cinf):
     c1, tau1, c2, tau2, c3, tau3 = params
-    cinf = 1 - c1 - c2 - c3
     cc = 1 + (1 -
               c1 * np.exp(-time / tau1) -
               c2 * np.exp(-time / tau2) -
-              c3 * np.exp(-time / tau3) -
-              cinf
-              ) * (1 / ginf - 1)
+              c3 * np.exp(-time / tau3)
+              ) * (cinf - 1)
     return cc
 
 
@@ -48,7 +51,21 @@ def predict_force(params_d2f, params_rel, time, displ):
     return force
 
 
-def get_r2(params, time, displ, force):
+def predict_displ(params_d2f, params_crp, time, force, cinf):
+    displ_elastic = force2displ(params_d2f, force)
+    cc = creep(params_crp, time, cinf)
+    displ = np.convolve(cc, np.gradient(displ_elastic) / DT)[:time.size] * DT
+    return displ
+
+
+def get_crp_sse(params_crp, time, params_rel, cinf):
+    cc = creep(params_crp, time, cinf)
+    gr = relax(params_rel, time)
+    sse = ((np.convolve(cc, gr)[:time.size] * DT - time) ** 2).sum()
+    return sse
+
+
+def get_force_r2(params, time, displ, force):
     params_d2f = params[:2]
     params_rel = params[2:]
     force_predicted = predict_force(params_d2f, params_rel, time, displ)
@@ -82,26 +99,53 @@ if __name__ == '__main__':
         force_list.append(force[contact_idx:contact_idx + 5000])
     # %% Start fitting the force trances
 
-    def get_avg_r2(params, sign=1.):
+    def get_avg_force_r2(params, sign=1.):
         r2_list = []
         for i, displ in enumerate(displ_list):
             force = force_list[i]
             time = time_list[i]
-            r2_list.append(get_r2(params, time, displ, force))
+            r2_list.append(get_force_r2(params, time, displ, force))
         avg_r2 = np.mean(r2_list)
         return sign * avg_r2
     bounds = ((0, None), (0, None),
-              (0, 1), (0, None),
-              (0, 1), (0, None),
-              (0, 1), (0, None))
-    constraints = ({'type': 'ineq', 'fun': lambda x: 1 - x[2] - x[4] - x[6]})
+              (0, 1), (1e-1, None),
+              (0, 1), (1e-1, None),
+              (0, 1), (1e-1, None))
+    constraints = ({'type': 'ineq', 'fun': lambda x: 1 - np.sum(x[2::2])})
     x0 = (1e-2, 5, .3, .1, .3, 1, .3, 10)
-    res = minimize(get_avg_r2, x0, args=(-1), method='SLSQP',
+    res = minimize(get_avg_force_r2, x0, args=(-1), method='SLSQP',
                    bounds=bounds, constraints=constraints)
     params = res.x
     avg_r2 = -res.fun
+    params_rel = params[2:]
+    params_d2f = params[:2]
+    ginf = 1 - np.sum(params_rel[::2])
+    # %% Predict displacement it takes to generate the desired force
+    ramp_time = 1
+    maxidx = int(ramp_time / DT)
+    for i, stimulus in enumerate(stimuli_list):
+        # Calculate cinf at this stimuli
+        d0 = force2displ(params_d2f, stimulus * 1e-3)
+        dinf = force2displ(params_d2f, stimulus * 1e-3 / ginf)
+        cinf = dinf / d0
+        # Get creep curve under this stimuli
+        bounds = ((0, 1), (1e-1, None),
+                  (0, 1), (1e-1, None),
+                  (0, 1), (1e-1, None))
+        constraints = ({'type': 'eq', 'fun': lambda x: 1 - np.sum(x[::2])})
+        x0 = (.3, .1, .3, .1, .3, 1.)
+        res = minimize(get_crp_sse, x0, args=(time, params_rel, cinf),
+                       method='SLSQP', bounds=bounds, constraints=constraints)
+        params_crp = res.x
+        # Calculate force
+        time = np.arange(5000) * DT
+        force_cmd = np.empty_like(time)
+        force_cmd[:maxidx] = np.linspace(0, stimulus * 1e-3, maxidx)
+        force_cmd[maxidx:] = stimulus * 1e-3
+        displ = predict_displ(params_d2f, params_crp, time, force_cmd, cinf)
+        force_check = predict_force(params_d2f, params_rel, time, displ)
     # %% Plot the fitting
-    fig, axs = plt.subplots(3, 2, figsize=(6.83, 7.5))
+    fig, axs = plt.subplots(3, 3, figsize=(7, 7.5))
     for i, displ in enumerate(displ_list):
         force = force_list[i]
         time = time_list[i]
