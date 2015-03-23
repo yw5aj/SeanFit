@@ -129,11 +129,11 @@ if __name__ == '__main__':
         dinf = force2displ(params_d2f, stimulus * 1e-3 / ginf)
         cinf = dinf / d0
         # Get creep curve under this stimuli
-        bounds = ((0, 1), (1e-1, None),
-                  (0, 1), (1e-1, None),
-                  (0, 1), (1e-1, None))
+        bounds = ((0, 1), (1e-2, None),
+                  (0, 1), (1e-2, None),
+                  (0, 1), (1e-2, None))
         constraints = ({'type': 'eq', 'fun': lambda x: 1 - np.sum(x[::2])})
-        x0 = (.3, .1, .3, .1, .3, 1.)
+        x0 = params_rel
         res = minimize(get_crp_sse, x0, args=(time, params_rel, cinf),
                        method='SLSQP', bounds=bounds, constraints=constraints)
         params_crp = res.x
