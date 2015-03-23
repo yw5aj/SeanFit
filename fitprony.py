@@ -65,6 +65,14 @@ def get_crp_sse(params_crp, time, params_rel, cinf):
     return sse
 
 
+def get_force_sse(params, time, displ, force):
+    params_d2f = params[:2]
+    params_rel = params[2:]
+    force_predicted = predict_force(params_d2f, params_rel, time, displ)
+    sse = ((force - force_predicted) ** 2).sum()
+    return sse
+
+
 def get_force_r2(params, time, displ, force):
     params_d2f = params[:2]
     params_rel = params[2:]
@@ -108,9 +116,9 @@ if __name__ == '__main__':
         avg_r2 = np.mean(r2_list)
         return sign * avg_r2
     bounds = ((0, None), (0, None),
-              (0, 1), (1e-1, None),
-              (0, 1), (1e-1, None),
-              (0, 1), (1e-1, None))
+              (0, 1), (1e-2, None),
+              (0, 1), (1e-2, None),
+              (0, 1), (1e-2, None))
     constraints = ({'type': 'ineq', 'fun': lambda x: 1 - np.sum(x[2::2])})
     x0 = (1e-2, 5, .3, .1, .3, 1, .3, 10)
     res = minimize(get_avg_force_r2, x0, args=(-1), method='SLSQP',
@@ -124,6 +132,10 @@ if __name__ == '__main__':
     ramp_time = 1
     maxidx = int(ramp_time / DT)
     for i, stimulus in enumerate(stimuli_list):
+        time = np.arange(5000) * DT
+        force_cmd = np.empty_like(time)
+        force_cmd[:maxidx] = np.linspace(0, stimulus * 1e-3, maxidx)
+        force_cmd[maxidx:] = stimulus * 1e-3
         # Calculate cinf at this stimuli
         d0 = force2displ(params_d2f, stimulus * 1e-3)
         dinf = force2displ(params_d2f, stimulus * 1e-3 / ginf)
@@ -134,14 +146,16 @@ if __name__ == '__main__':
                   (0, 1), (1e-2, None))
         constraints = ({'type': 'eq', 'fun': lambda x: 1 - np.sum(x[::2])})
         x0 = params_rel
-        res = minimize(get_crp_sse, x0, args=(time, params_rel, cinf),
+        x0[-1] = 1 - sum(params_rel[::2][:-1])
+
+        def crp2force_sse(params_crp):
+            displ = predict_displ(params_d2f, params_crp,
+                                  time, force_cmd, cinf)
+            sse = get_force_sse(params, time, displ, force_cmd)
+            return sse
+        res = minimize(crp2force_sse, x0, args=(),
                        method='SLSQP', bounds=bounds, constraints=constraints)
         params_crp = res.x
-        # Calculate force
-        time = np.arange(5000) * DT
-        force_cmd = np.empty_like(time)
-        force_cmd[:maxidx] = np.linspace(0, stimulus * 1e-3, maxidx)
-        force_cmd[maxidx:] = stimulus * 1e-3
         displ = predict_displ(params_d2f, params_crp, time, force_cmd, cinf)
         force_check = predict_force(params_d2f, params_rel, time, displ)
     # %% Plot the fitting
