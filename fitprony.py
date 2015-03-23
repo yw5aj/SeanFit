@@ -58,13 +58,6 @@ def predict_displ(params_d2f, params_crp, time, force, cinf):
     return displ
 
 
-def get_crp_sse(params_crp, time, params_rel, cinf):
-    cc = creep(params_crp, time, cinf)
-    gr = relax(params_rel, time)
-    sse = ((np.convolve(cc, gr)[:time.size] * DT - time) ** 2).sum()
-    return sse
-
-
 def get_force_sse(params, time, displ, force):
     params_d2f = params[:2]
     params_rel = params[2:]
@@ -128,42 +121,68 @@ if __name__ == '__main__':
     params_rel = params[2:]
     params_d2f = params[:2]
     ginf = 1 - np.sum(params_rel[::2])
-    # %% Predict displacement it takes to generate the desired force
-    ramp_time = 1
-    maxidx = int(ramp_time / DT)
+    # %% Find point by point
+    resolution = 1e-2
+    ramp_time = .5
+    maxidx = int(ramp_time / resolution)
+    displ_cmd_list, force_cmd_list, force_model_list = [], [], []
+    time = np.arange(500) * resolution
+    fine_time = np.arange(5000) * DT
     for i, stimulus in enumerate(stimuli_list):
-        time = np.arange(5000) * DT
         force_cmd = np.empty_like(time)
         force_cmd[:maxidx] = np.linspace(0, stimulus * 1e-3, maxidx)
         force_cmd[maxidx:] = stimulus * 1e-3
-        # Calculate cinf at this stimuli
-        d0 = force2displ(params_d2f, stimulus * 1e-3)
-        dinf = force2displ(params_d2f, stimulus * 1e-3 / ginf)
-        cinf = dinf / d0
-        # Get creep curve under this stimuli
-        bounds = ((0, 1), (1e-2, None),
-                  (0, 1), (1e-2, None),
-                  (0, 1), (1e-2, None))
-        constraints = ({'type': 'eq', 'fun': lambda x: 1 - np.sum(x[::2])})
-        x0 = params_rel
-        x0[-1] = 1 - sum(params_rel[::2][:-1])
+        displ = np.empty_like(time)
+        for idx in range(time.size - 1):
 
-        def crp2force_sse(params_crp):
-            displ = predict_displ(params_d2f, params_crp,
-                                  time, force_cmd, cinf)
-            sse = get_force_sse(params, time, displ, force_cmd)
-            return sse
-        res = minimize(crp2force_sse, x0, args=(),
-                       method='SLSQP', bounds=bounds, constraints=constraints)
-        params_crp = res.x
-        displ = predict_displ(params_d2f, params_crp, time, force_cmd, cinf)
-        force_check = predict_force(params_d2f, params_rel, time, displ)
+            def get_current_sse(d):
+                displ[idx + 1] = d
+                current_displ = displ[:idx + 2]
+                current_force = force_cmd[:idx + 2]
+                current_time = time[:idx + 2]
+                predicted_force = predict_force(params_d2f, params_rel,
+                                                current_time, current_displ)
+                sse = ((current_force - predicted_force) ** 2).sum()
+                return sse
+            d0 = force2displ(params_d2f, stimulus * 1e-3)
+            d = minimize(get_current_sse, d0, method='L-BFGS-B').x
+            displ[idx + 1] = d
+        displ_cmd_list.append(np.interp(fine_time, time, displ))
+        force_cmd_list.append(np.interp(fine_time, time, force_cmd))
+        force_model_list.append(predict_force(params_d2f, params_rel,
+                                              fine_time, displ_cmd_list[-1]))
     # %% Plot the fitting
     fig, axs = plt.subplots(3, 3, figsize=(7, 7.5))
     for i, displ in enumerate(displ_list):
+        # First column, fitting
         force = force_list[i]
         time = time_list[i]
         force_predicted = predict_force(params[:2], params[2:], time, displ)
-        axs[i, 0].plot(time, force, '.', color='.5')
-        axs[i, 0].plot(time, force_predicted, '-k')
-
+        axs[i, 0].plot(time, force, '.', color='.5', label='Data')
+        axs[i, 0].plot(time, force_predicted, '-k', label='Model')
+        # Second column, commanded displ
+        displ_cmd = displ_cmd_list[i]
+        axs[i, 1].plot(time, displ_cmd, '-k', label='Commanded')
+        # Thrid column, commanded force vs. modeled
+        force_cmd = force_cmd_list[i]
+        force_model = force_model_list[i]
+        axs[i, 2].plot(time, force_cmd, '-b', label='Ideal/commanded')
+        axs[i, 2].plot(time, force_model, '-r', label='Achieved in model')
+    # Formatting
+    for axes in axs.ravel():
+        axes.set_xlim(-.5, 5.5)
+    for axes in axs[-1]:
+        axes.set_xlabel('Time (s)')
+    for axes in axs.T[0]:
+        axes.set_ylabel('Force (N)')
+    for axes in axs.T[1]:
+        axes.set_ylabel('Displacement (mm)')
+    for axes in axs.T[2]:
+        axes.set_ylabel('Force (N)')
+    axs[0, 0].legend(loc=4)
+    axs[0, 1].legend(loc=4)
+    axs[0, 2].legend(loc=4)
+    axs[0, 2].set_ylim(top=.012)
+    axs[2, 2].set_ylim(top=.22)
+    fig.tight_layout()
+    fig.savefig('./plots/model.png')
