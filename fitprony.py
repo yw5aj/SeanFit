@@ -20,20 +20,22 @@ def displ2force(params, displ):
 
 
 def relax(params, time):
-    g1, tau1, g2, tau2 = params
-    ginf = 1 - g1 - g2
+    g1, tau1, g2, tau2, g3, tau3 = params
+    ginf = 1 - g1 - g2 - g3
     gr = g1 * np.exp(-time / tau1) +\
         g2 * np.exp(-time / tau2) +\
+        g3 * np.exp(-time / tau3) +\
         ginf
     return gr
 
 
 def creep(params, time, ginf):
-    c1, tau1, c2, tau2 = params
-    cinf = 1 - c1 - c2
+    c1, tau1, c2, tau2, c3, tau3 = params
+    cinf = 1 - c1 - c2 - c3
     cc = 1 + (1 -
               c1 * np.exp(-time / tau1) -
               c2 * np.exp(-time / tau2) -
+              c3 * np.exp(-time / tau3) -
               cinf
               ) * (1 / ginf - 1)
     return cc
@@ -90,9 +92,10 @@ if __name__ == '__main__':
         return sign * avg_r2
     bounds = ((0, None), (0, None),
               (0, 1), (0, None),
+              (0, 1), (0, None),
               (0, 1), (0, None))
-    constraints = ({'type': 'ineq', 'fun': lambda x: 1 - x[2] - x[4]})
-    x0 = (1e-2, 5, .3, .1, .3, 1)
+    constraints = ({'type': 'ineq', 'fun': lambda x: 1 - x[2] - x[4] - x[6]})
+    x0 = (1e-2, 5, .3, .1, .3, 1, .3, 10)
     res = minimize(get_avg_r2, x0, args=(-1), method='SLSQP',
                    bounds=bounds, constraints=constraints)
     params = res.x
